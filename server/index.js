@@ -1,26 +1,35 @@
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
 
-const allowedOrigin = process.env.CLIENT_ORIGIN || '*';
-
+// Render ortamında CORS çok önemli değil, çünkü frontend de buradan gelecek
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigin,
+    origin: true,
     methods: ['GET', 'POST']
   }
 });
 
 app.use(
   cors({
-    origin: allowedOrigin
+    origin: true
   })
 );
 app.use(express.json());
+
+// ------- FRONTEND SERVİSİ (React build) -------
+const distPath = path.join(__dirname, '..', 'dist');
+app.use(express.static(distPath));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(distPath, 'index.html'));
+});
+// ---------------------------------------------
 
 // In-memory lobby store
 const lobbies = new Map(); // lobbyId -> lobby object
@@ -74,13 +83,15 @@ function serializeLobby(lobby) {
       userName: info.userName
     })),
     voiceChannelMembers: Object.fromEntries(
-      Array.from(lobby.voiceChannelMembers.entries()).map(([channelId, membersMap]) => [
-        channelId,
-        Array.from(membersMap.entries()).map(([socketId, info]) => ({
-          socketId,
-          userName: info.userName
-        }))
-      ])
+      Array.from(lobby.voiceChannelMembers.entries()).map(
+        ([channelId, membersMap]) => [
+          channelId,
+          Array.from(membersMap.entries()).map(([socketId, info]) => ({
+            socketId,
+            userName: info.userName
+          }))
+        ]
+      )
     )
   };
 }
@@ -144,7 +155,10 @@ io.on('connection', (socket) => {
     if (!lobby) return;
 
     const effectiveUserName =
-      userName || (lobby.members.get(socket.id) && lobby.members.get(socket.id).userName) || 'Kullanici';
+      userName ||
+      (lobby.members.get(socket.id) &&
+        lobby.members.get(socket.id).userName) ||
+      'Kullanici';
 
     let channelMembers = lobby.voiceChannelMembers.get(channelId);
     if (!channelMembers) {
@@ -154,7 +168,6 @@ io.on('connection', (socket) => {
 
     channelMembers.set(socket.id, { userName: effectiveUserName });
 
-    // Bilgi: yeni kullaniciya mevcut ses kullanicilarini gönder
     const existingMembers = Array.from(channelMembers.entries())
       .filter(([memberSocketId]) => memberSocketId !== socket.id)
       .map(([memberSocketId, info]) => ({
@@ -168,7 +181,6 @@ io.on('connection', (socket) => {
       users: existingMembers
     });
 
-    // Lobideki diger kullanicilara bu kullanicinin ses kanalina katildigini yayinla
     socket.to(lobby.id).emit('userJoinedVoice', {
       lobbyId,
       channelId,
@@ -194,7 +206,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // WebRTC signaling
   socket.on('webrtcOffer', ({ targetSocketId, sdp }) => {
     io.to(targetSocketId).emit('webrtcOffer', {
       fromSocketId: socket.id,
@@ -222,10 +233,8 @@ io.on('connection', (socket) => {
     const lobby = lobbies.get(currentLobbyId);
     if (!lobby) return;
 
-    // lobiden cikart
     lobby.members.delete(socket.id);
 
-    // ses kanalindan cikart
     lobby.voiceChannelMembers.forEach((channelMembers, channelId) => {
       if (channelMembers.has(socket.id)) {
         channelMembers.delete(socket.id);
@@ -241,7 +250,6 @@ io.on('connection', (socket) => {
       socketId: socket.id
     });
 
-    // Lobi bosaldiysa hafizadan sil
     if (lobby.members.size === 0) {
       lobbies.delete(lobby.id);
       inviteCodeToLobbyId.delete(lobby.inviteCode);
@@ -249,11 +257,9 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`Signaling ve lobi sunucusu ${PORT} portunda calisiyor`);
 });
-
-
